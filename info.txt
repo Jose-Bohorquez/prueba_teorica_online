@@ -1,0 +1,19 @@
+/exam-system
+│── /public
+│   ├── index.php          # Página principal - login
+│   ├── dashboard.php      # Panel de usuario/admin
+│   ├── exam.php           # Página de examen
+│   ├── result.php         # Ver resultados
+│   ├── assets/
+│       ├── tailwind.css
+│       ├── app.js
+│── /config
+│   ├── database.php       # Conexión PDO segura
+│── /controllers
+│   ├── AuthController.php
+│   ├── ExamController.php
+│   ├── QuestionController.php
+│── /includes
+│   ├── header.php
+│   ├── footer.php
+│── /vendor               # Aquí irían librerías externas si usamos Composer
