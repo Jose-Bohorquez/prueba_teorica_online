@@ -9,6 +9,17 @@ if (!isset($_SESSION['user_id'])) {
 
 $user_id = $_SESSION['user_id'];
 
+// Verificar el estado del examen del usuario
+$stmt = $pdo->prepare("SELECT exam_status FROM users WHERE id = ?");
+$stmt->execute([$_SESSION['user_id']]);
+$user_exam_status = $stmt->fetchColumn();
+
+// Si el examen está anulado, redirigir al dashboard
+if ($user_exam_status === 'annulled') {
+    header('Location: dashboard.php?exam_annulled=1');
+    exit;
+}
+
 // Verificar si ya respondió
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM user_answers WHERE user_id = :user_id");
 $stmt->execute(['user_id' => $user_id]);
@@ -19,12 +30,19 @@ if ($yaRespondio > 0) {
     exit();
 }
 
-// Generar orden de preguntas si no existe
+// Generar orden de preguntas si no existe (máximo 40 preguntas)
 if (!isset($_SESSION['exam_questions'])) {
     $stmt = $pdo->prepare("SELECT id FROM questions");
     $stmt->execute();
     $question_ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
     shuffle($question_ids);
+    
+    // Limitar a máximo 40 preguntas
+    $max_questions = 40;
+    if (count($question_ids) > $max_questions) {
+        $question_ids = array_slice($question_ids, 0, $max_questions);
+    }
+    
     $_SESSION['exam_questions'] = $question_ids;
 }
 
@@ -46,7 +64,7 @@ foreach ($_SESSION['exam_questions'] as $qid) {
 }
 $questions = $questions_ordered;
 
-// Opciones aleatorias
+// Opciones aleatorias - se mezclan cada vez que se consultan
 $options_stmt = $pdo->prepare("SELECT * FROM options WHERE question_id = :question_id ORDER BY RAND()");
 ?>
 
@@ -98,7 +116,16 @@ $options_stmt = $pdo->prepare("SELECT * FROM options WHERE question_id = :questi
 
 <!-- Contenido del examen -->
 <div id="examContent" class="container mx-auto py-10" style="display:none;">
-    <form action="submit_exam.php" method="POST" class="space-y-6">
+    <!-- Temporizador Flotante -->
+    <div id="floating-timer" class="fixed top-4 right-4 bg-white rounded-xl shadow-lg p-4 z-50 border-2 border-blue-200">
+        <div class="text-center">
+            <div id="timer" class="text-xl font-bold text-blue-600 mb-1">02:00:00</div>
+            <div class="text-xs text-gray-600">Tiempo Restante</div>
+            <div class="text-xs text-red-500 mt-1">Auto-envío al finalizar</div>
+        </div>
+    </div>
+    
+    <form id="examForm" action="submit_exam.php" method="POST" class="space-y-6">
         <?php foreach ($questions as $q): ?>
             <div class="bg-white p-6 rounded-2xl shadow">
                 <h2 class="text-lg font-semibold mb-4"><?php echo htmlspecialchars($q['question_text']); ?></h2>
@@ -131,11 +158,57 @@ const startBtn = document.getElementById('startExam');
 const startContainer = document.getElementById('startContainer');
 const examDiv = document.getElementById('examContent');
 const acceptTerms = document.getElementById('acceptTerms');
+const timerDisplay = document.getElementById('timer');
+const examForm = document.getElementById('examForm');
+
+let timeLeft = 2 * 60 * 60; // 2 horas en segundos
+let timerInterval;
 
 // Habilitar botón solo si acepta términos
 acceptTerms.addEventListener('change', () => {
     startBtn.disabled = !acceptTerms.checked;
 });
+
+// Función para formatear tiempo
+function formatTime(seconds) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+// Función del temporizador
+function startTimer() {
+    timerInterval = setInterval(() => {
+        timeLeft--;
+        timerDisplay.textContent = formatTime(timeLeft);
+        
+        // Cambiar color cuando queden 30 minutos
+        if (timeLeft <= 30 * 60) {
+            timerDisplay.classList.add('text-red-800');
+            timerDisplay.classList.remove('text-red-600');
+        }
+        
+        // Cambiar color cuando queden 10 minutos
+        if (timeLeft <= 10 * 60) {
+            timerDisplay.classList.add('animate-pulse');
+        }
+        
+        // Enviar automáticamente cuando se agote el tiempo
+        if (timeLeft <= 0) {
+            clearInterval(timerInterval);
+            Swal.fire({
+                icon: 'warning',
+                title: 'Tiempo Agotado',
+                text: 'El tiempo del examen ha terminado. Se enviarán automáticamente tus respuestas.',
+                confirmButtonText: 'Entendido',
+                allowOutsideClick: false
+            }).then(() => {
+                examForm.submit();
+            });
+        }
+    }, 1000);
+}
 
 // Iniciar examen
 startBtn.addEventListener('click', () => {
@@ -149,6 +222,9 @@ startBtn.addEventListener('click', () => {
     // Mostrar examen y ocultar preámbulo
     examDiv.style.display = 'block';
     startContainer.style.display = 'none';
+    
+    // Iniciar temporizador
+    startTimer();
 });
 
 // Bloquear teclas peligrosas
@@ -165,14 +241,52 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
+// Sistema de alertas por cambio de ventana
+let alertCount = 0;
+const maxAlerts = 3;
+
 // Detectar pérdida de foco (Alt+Tab, cambio de ventana)
 window.addEventListener('blur', () => {
-    Swal.fire({
-        icon: 'warning',
-        title: '¡Atención!',
-        text: 'No debes salir de la ventana del examen. Esta acción ha sido detectada.',
-        confirmButtonText: 'Entendido'
-    });
+    // Solo contar si el examen ya comenzó
+    if (examDiv.style.display === 'block') {
+        alertCount++;
+        
+        if (alertCount >= maxAlerts) {
+            // Marcar el examen como anulado en la base de datos
+            fetch('annul_exam.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    user_id: <?php echo $_SESSION['user_id']; ?>
+                })
+            });
+            
+            // Anular examen después de 3 alertas
+            clearInterval(timerInterval);
+            Swal.fire({
+                icon: 'error',
+                title: 'Examen Anulado',
+                text: 'Has excedido el número máximo de alertas permitidas (3). El examen ha sido anulado permanentemente.',
+                confirmButtonText: 'Entendido',
+                allowOutsideClick: false,
+                allowEscapeKey: false
+            }).then(() => {
+                // Redirigir al dashboard con mensaje de anulación
+                window.location.href = 'dashboard.php?exam_annulled=1';
+            });
+        } else {
+            const remainingAlerts = maxAlerts - alertCount;
+            Swal.fire({
+                icon: 'warning',
+                title: `¡Alerta ${alertCount}/3!`,
+                text: `No debes salir de la ventana del examen. Te quedan ${remainingAlerts} alertas antes de que el examen sea anulado automáticamente.`,
+                confirmButtonText: 'Entendido',
+                confirmButtonColor: '#d33'
+            });
+        }
+    }
 });
 
 // Bloquear copiar/pegar y clic derecho

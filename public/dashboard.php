@@ -8,15 +8,40 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
+$user_role = $_SESSION['role'] ?? 'estudiante';
+
 // Definimos el único examen disponible
 $exam = [
     'id' => 1,
-    'title' => 'Examen General',
-    'description' => 'Este examen único evalúa todos los temas disponibles.'
+    'title' => 'Examen General de Conocimientos Técnicos',
+    'description' => 'Evaluación técnica que incluye preguntas sobre Selenium, Docker, Git, Linux y buenas prácticas de programación.'
 ];
 
 // Capturamos el mensaje si viene de exam.php
 $msg = isset($_GET['msg']) ? $_GET['msg'] : null;
+
+// Verificar el estado del examen del usuario
+$stmt = $pdo->prepare("SELECT exam_status FROM users WHERE id = ?");
+$stmt->execute([$_SESSION['user_id']]);
+$user_exam_status = $stmt->fetchColumn();
+
+// Verificar si el usuario ya tomó el examen
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM user_answers WHERE user_id = ?");
+$stmt->execute([$_SESSION['user_id']]);
+$exam_taken = $stmt->fetchColumn() > 0;
+
+// Si es admin, obtenemos estadísticas
+if ($user_role === 'admin') {
+    // Obtener estadísticas generales
+    $stmt = $pdo->query("SELECT COUNT(*) as total_users FROM users WHERE role = 'estudiante'");
+    $total_estudiantes = $stmt->fetch(PDO::FETCH_ASSOC)['total_users'];
+    
+    $stmt = $pdo->query("SELECT COUNT(DISTINCT user_id) as users_completed FROM user_answers");
+    $usuarios_completados = $stmt->fetch(PDO::FETCH_ASSOC)['users_completed'];
+    
+    $stmt = $pdo->query("SELECT COUNT(*) as total_questions FROM questions");
+    $total_preguntas = $stmt->fetch(PDO::FETCH_ASSOC)['total_questions'];
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -31,11 +56,29 @@ $msg = isset($_GET['msg']) ? $_GET['msg'] : null;
 
         <!-- Barra superior -->
         <div class="flex justify-between items-center mb-8">
-            <h1 class="text-3xl font-bold">Bienvenido, <?php echo htmlspecialchars($_SESSION['user_name'] ?? ''); ?></h1>
-            <button id="btnLogout"
-                class="bg-red-600 text-white px-4 py-2 rounded-xl hover:bg-red-700 transition">
-                Cerrar sesión
-            </button>
+            <div>
+                <h1 class="text-3xl font-bold">Bienvenido, <?php echo htmlspecialchars($_SESSION['user_name'] ?? ''); ?></h1>
+                <p class="text-gray-600 mt-1">
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <?php echo $user_role === 'admin' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'; ?>">
+                        <?php echo $user_role === 'admin' ? 'Administrador' : 'Estudiante'; ?>
+                    </span>
+                    | <?php echo htmlspecialchars($_SESSION['user_email'] ?? ''); ?>
+                </p>
+            </div>
+            <div class="flex space-x-3">
+                <?php if ($user_role === 'admin'): ?>
+                    <a href="results.php" class="bg-blue-600 text-white px-4 py-2 rounded-xl hover:bg-blue-700 transition mr-3">
+                        Ver Resultados
+                    </a>
+                    <a href="admin_panel.php" class="bg-purple-600 text-white px-4 py-2 rounded-xl hover:bg-purple-700 transition">
+                        Panel de Administración
+                    </a>
+                <?php endif; ?>
+                <button id="btnLogout"
+                    class="bg-red-600 text-white px-4 py-2 rounded-xl hover:bg-red-700 transition">
+                    Cerrar sesión
+                </button>
+            </div>
         </div>
 
         <!-- Recordatorio de normas antes del examen -->
@@ -64,10 +107,22 @@ $msg = isset($_GET['msg']) ? $_GET['msg'] : null;
             <div class="bg-white shadow-lg p-6 rounded-2xl text-center">
                 <h2 class="text-xl font-bold"><?php echo $exam['title']; ?></h2>
                 <p class="text-gray-600 mb-4"><?php echo $exam['description']; ?></p>
-                <a href="exam.php?id=<?php echo $exam['id']; ?>" id="startExamBtn"
-                   class="bg-green-600 text-white px-4 py-2 rounded-xl hover:bg-green-700 pointer-events-none opacity-50 transition">
-                    Iniciar Examen
-                </a>
+                <?php if ($user_exam_status === 'annulled'): ?>
+                    <button disabled
+                       class="bg-gray-400 text-white px-4 py-2 rounded-xl cursor-not-allowed opacity-50">
+                        Examen Anulado
+                    </button>
+                <?php elseif ($exam_taken): ?>
+                    <button disabled
+                       class="bg-gray-400 text-white px-4 py-2 rounded-xl cursor-not-allowed opacity-50">
+                        Ya Presentado
+                    </button>
+                <?php else: ?>
+                    <a href="exam.php?id=<?php echo $exam['id']; ?>" id="startExamBtn"
+                       class="bg-green-600 text-white px-4 py-2 rounded-xl hover:bg-green-700 pointer-events-none opacity-50 transition">
+                        Iniciar Examen
+                    </a>
+                <?php endif; ?>
             </div>
         </div>
     </div>
@@ -80,6 +135,18 @@ $msg = isset($_GET['msg']) ? $_GET['msg'] : null;
                 text: 'Ya realizaste este examen y no puedes repetirlo.',
                 confirmButtonText: 'Entendido',
                 confirmButtonColor: '#3085d6'
+            });
+        </script>
+    <?php endif; ?>
+    
+    <?php if ($msg === 'examen_anulado'): ?>
+        <script>
+            Swal.fire({
+                icon: 'error',
+                title: 'Examen Anulado Permanentemente',
+                text: 'Tu examen fue anulado por exceder el número máximo de alertas permitidas. Solo un administrador puede rehabilitarte para volver a realizar el examen.',
+                confirmButtonText: 'Entendido',
+                confirmButtonColor: '#d33'
             });
         </script>
     <?php endif; ?>
